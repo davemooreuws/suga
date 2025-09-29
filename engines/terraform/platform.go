@@ -100,6 +100,70 @@ func (p PlatformSpec) GetLibraries() map[libraryID]*Library {
 	return libraries
 }
 
+// GetAllPlugins returns all plugins referenced in the platform spec
+func (p PlatformSpec) GetAllPlugins() ([]*Plugin, error) {
+	var plugins []*Plugin
+	seen := make(map[string]bool) // To avoid duplicates
+
+	// Helper function to collect plugins from resource blueprints
+	collectPlugins := func(blueprints map[string]*ResourceBlueprint) error {
+		for _, blueprint := range blueprints {
+			if blueprint == nil {
+				continue
+			}
+			plugin, err := blueprint.ResolvePlugin(&p)
+			if err != nil {
+				return err
+			}
+
+			// Create unique key for deduplication
+			key := fmt.Sprintf("%s/%s@%s:%s", plugin.Library.Team, plugin.Library.Name, plugin.Library.Version, plugin.Name)
+			if !seen[key] {
+				seen[key] = true
+				plugins = append(plugins, plugin)
+			}
+		}
+		return nil
+	}
+
+	// Collect from service blueprints (both resource and identity plugins)
+	serviceBlueprints := make(map[string]*ResourceBlueprint)
+	for name, serviceBlueprint := range p.ServiceBlueprints {
+		if serviceBlueprint != nil && serviceBlueprint.ResourceBlueprint != nil {
+			serviceBlueprints[name] = serviceBlueprint.ResourceBlueprint
+		}
+		// Collect identity plugins from service blueprints
+		if serviceBlueprint != nil && serviceBlueprint.IdentitiesBlueprint != nil {
+			for i, identity := range serviceBlueprint.IdentitiesBlueprint.GetIdentities() {
+				identityKey := fmt.Sprintf("%s_identity_%d", name, i)
+				serviceBlueprints[identityKey] = &identity
+			}
+		}
+	}
+	if err := collectPlugins(serviceBlueprints); err != nil {
+		return nil, err
+	}
+
+	// Collect from other resource blueprints
+	if err := collectPlugins(p.BucketBlueprints); err != nil {
+		return nil, err
+	}
+	if err := collectPlugins(p.TopicBlueprints); err != nil {
+		return nil, err
+	}
+	if err := collectPlugins(p.DatabaseBlueprints); err != nil {
+		return nil, err
+	}
+	if err := collectPlugins(p.EntrypointBlueprints); err != nil {
+		return nil, err
+	}
+	if err := collectPlugins(p.InfraSpecs); err != nil {
+		return nil, err
+	}
+
+	return plugins, nil
+}
+
 func (p PlatformSpec) GetServiceBlueprint(intentSubType string) (*ServiceBlueprint, error) {
 	spec := p.ServiceBlueprints
 

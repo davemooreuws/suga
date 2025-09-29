@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -49,6 +50,17 @@ func (b *BuilderService) BuildProjectForTarget(appSpec *schema.Application, targ
 
 	repo := plugins.NewPluginRepository(b.apiClient)
 	engine := terraform.New(platform, terraform.WithRepository(repo))
+
+	// Preload all plugins concurrently for better performance
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	err = engine.PreloadPlugins(ctx)
+	if err != nil {
+		// If preloading fails, we'll fall back to loading plugins on-demand
+		// This ensures backwards compatibility while still providing performance benefits when possible
+		fmt.Printf("Warning: Failed to preload plugins, falling back to on-demand loading: %v\n", err)
+	}
 
 	stackPath, err := engine.Apply(appSpec)
 	if err != nil {

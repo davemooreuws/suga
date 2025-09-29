@@ -2,6 +2,7 @@ package terraform
 
 import (
 	_ "embed"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,8 +37,9 @@ func NewPanicError(panicValue interface{}, stackTrace []byte) *PanicError {
 }
 
 type TerraformEngine struct {
-	platform   *PlatformSpec
-	repository PluginRepository
+	platform    *PlatformSpec
+	repository  PluginRepository
+	pluginCache *PluginCache
 
 	outputDir string
 }
@@ -52,6 +54,15 @@ func (e *TerraformEngine) resolveIdentityPlugin(blueprint *ResourceBlueprint) (*
 	if err != nil {
 		return nil, err
 	}
+
+	// Try cache first, fallback to repository
+	if e.pluginCache != nil {
+		plugin, err := e.pluginCache.GetIdentityPlugin(pluginRef.Library.Team, pluginRef.Library.Name, pluginRef.Library.Version, pluginRef.Name)
+		if err == nil {
+			return plugin, nil
+		}
+	}
+
 	return e.repository.GetIdentityPlugin(pluginRef.Library.Team, pluginRef.Library.Name, pluginRef.Library.Version, pluginRef.Name)
 }
 
@@ -64,6 +75,15 @@ func (e *TerraformEngine) resolvePlugin(blueprint *ResourceBlueprint) (*Resource
 	if err != nil {
 		return nil, err
 	}
+
+	// Try cache first, fallback to repository
+	if e.pluginCache != nil {
+		plugin, err := e.pluginCache.GetResourcePlugin(pluginRef.Library.Team, pluginRef.Library.Name, pluginRef.Library.Version, pluginRef.Name)
+		if err == nil {
+			return plugin, nil
+		}
+	}
+
 	return e.repository.GetResourcePlugin(pluginRef.Library.Team, pluginRef.Library.Name, pluginRef.Library.Version, pluginRef.Name)
 }
 
@@ -84,6 +104,14 @@ func (e *TerraformEngine) GetPluginManifestsForType(typ string) (map[string]*Res
 	}
 
 	return manifests, nil
+}
+
+// PreloadPlugins loads all plugins for the platform concurrently
+func (e *TerraformEngine) PreloadPlugins(ctx context.Context) error {
+	if e.repository == nil {
+		return fmt.Errorf("no plugin repository configured")
+	}
+	return e.pluginCache.PreloadPlugins(ctx, e.platform, e.repository)
 }
 
 // Apply the engine to the target environment
@@ -237,8 +265,9 @@ func NewFromFile(platformFile io.Reader, opts ...terraformEngineOption) *Terrafo
 
 func New(platformSpec *PlatformSpec, opts ...terraformEngineOption) *TerraformEngine {
 	engine := &TerraformEngine{
-		platform:  platformSpec,
-		outputDir: "terraform",
+		platform:    platformSpec,
+		pluginCache: NewPluginCache(),
+		outputDir:   "terraform",
 	}
 
 	for _, opt := range opts {
